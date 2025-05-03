@@ -2,6 +2,8 @@
 This is the current code for the Runs/Dynasty bot that runs on the TLD Discord server
 This is by no means perfect code and was slapped together in my free time.
 
+This bot uses py-cord: pip3 install py-cord
+
 Just add your discord token and your guild id to the code, setup your discord bot for use with slash commands, all intents, and bot permissions, and you just need to run the main file. Voila
 
 These are the discord commands: /host /ng /runs /end /leave /add /kick /change_runner /rename /top_runners /top_participants /top_monthly_runners /top_monthly_participants /leaderboard
