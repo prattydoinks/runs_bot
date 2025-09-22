@@ -24,6 +24,23 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 """)
 
+def get_realm(run):
+    HARDCORE_LAD = 1356339382323249312
+    HARDCORE_NONLAD = 1337609082290573404
+    SOFTCORE_LAD = 1337608997997510732
+    SOFTCORE_NONLAD = 1337608670661316678
+
+    if run['ladder'] == "Non-Ladder":
+        return SOFTCORE_NONLAD
+    elif run['ladder'] == "Ladder":
+        return SOFTCORE_LAD
+    elif run['ladder'] == "Non-Ladder Hardcore":
+        return HARDCORE_NONLAD
+    elif run['ladder'] == "Ladder Hardcore":
+        return HARDCORE_LAD
+    else:
+        return False
+
 conn.commit()
 
 class JoinRunView(discord.ui.View):
@@ -67,10 +84,10 @@ cursor_lock = asyncio.Lock()
 active_runs_lock = asyncio.Lock()
 run_timeouts_lock = asyncio.Lock()
 
-TOKEN = "YOUR_TOKEN_HERE"
+TOKEN = "..."
 intents = discord.Intents.all()
 bot = commands.Bot(intents=intents)
-guild_ids = [<YOUR_GUILD_ID_HERE_AS_INT>]
+guild_ids = [1106132569914867776]
 
 async def remove_run_after_timeout(run_owner):
     await asyncio.sleep(2 * 60 * 60)  # 1.5 hours
@@ -128,6 +145,7 @@ async def command_help(ctx):
 These are the commands: /host /ng /runs /end /leave /add /kick /change_runner /rename /top_runners /top_participants /top_monthly_runners /top_monthly_participants /leaderboard
 
 /host starts a new game with a few options
+/broadcast will create a chat message tagging everyone in a game allowing you to send info
 /ng creates a new game
 /runs will show available and non-available runs with join buttons depending and YOUR game's info if you're joined
 /end will close out an instance of a run and is for the host's use
@@ -143,6 +161,19 @@ These are the commands: /host /ng /runs /end /leave /add /kick /change_runner /r
 
     await ctx.respond(commands_string, ephemeral=True)
 
+@bot.slash_command(name="advertise", description="Advertise your game.", guild_ids=guild_ids)
+async def advertise(ctx):
+    global active_runs
+    player = ctx.author
+    run = return_run(player)
+    if run:
+        view = JoinRunView(run_id=ctx.author, timeout=850)
+        channel = bot.get_channel(get_realm(active_runs[run['runner']]))
+        message = await channel.send(f"Join {run['type']} runs on {run['ladder']} hosted by {run['runner'].mention}!", view=view)
+        view.message = message
+    else:
+        await ctx.respond("You are not currently in a run.", ephemeral=True)
+
 @bot.slash_command(name="add", description="Add a player to your game.", guild_ids=guild_ids)
 async def add(ctx, player: Option(discord.Member, "Select a player to add.")):
     global active_runs
@@ -150,7 +181,7 @@ async def add(ctx, player: Option(discord.Member, "Select a player to add.")):
     if user in active_runs.keys():
         run_info = active_runs[user]
         if len(run_info['attendees']) < 7:
-            if player != user and player not in run_info['attendees']:
+            if player != user and player not in run_info['attendees'] and player not in active_runs.keys():
                 async with active_runs_lock:
                     run_info['attendees'].append(player)
                 async with cursor_lock:
@@ -209,8 +240,10 @@ async def rename(ctx):
         """, (modal.run_name, user.id))  # Reset attendees list if needed
         conn.commit()
 
+    channel = bot.get_channel(get_realm(active_runs[user]))
+
     # Send a confirmation message
-    await ctx.respond(f"{user.mention}'s game name and password have been updated!")
+    await channel.send(f"{user.mention}'s game name and password have been updated!")
 
 @bot.slash_command(name="change_runner", description="Transfer ownership of your run to another player.", guild_ids=guild_ids)
 async def change_runner(ctx, 
@@ -249,7 +282,9 @@ async def change_runner(ctx,
         async with cursor_lock:
             del_player_from_run_db(new_runner.id, new_runner.name)  # Remove from DB attendees
 
-    await ctx.respond(f"{user.mention}'s run has been transferred! {new_runner.mention} is now the new host.")
+    channel = bot.get_channel(get_realm(run_info))
+
+    await channel.send(f"{user.mention}'s run has been transferred! {new_runner.mention} is now the new host.")
 
 @bot.slash_command(name="kick", description="Kick a player from your game.", guild_ids=guild_ids)
 async def kick(ctx, player: Option(discord.Member, "Select a player to kick.")):
@@ -277,7 +312,7 @@ async def kick(ctx, player: Option(discord.Member, "Select a player to kick.")):
                     del_player_from_run_db(run.id, player.name)
                 await ctx.respond(f"{player.mention} has been kicked from your run.", ephemeral=True)
                 return
-    await ctx.respond("Player is not in game.")
+    await ctx.respond("Player is not in game.", ephemeral=True)
 
 @bot.slash_command(name="host", description="Host a new game", guild_ids=guild_ids)
 async def host(ctx,
@@ -313,7 +348,8 @@ async def host(ctx,
             conn.commit()
 
         view = JoinRunView(run_id=ctx.author, timeout=850)
-        message = await ctx.respond(f"**`NEW RUN ALERT!`**\nJoin {type} runs on\n# {ladder}\nhosted by {ctx.author.mention}!", view=view)
+        channel = bot.get_channel(get_realm(active_runs[ctx.author]))
+        message = await channel.send(f"**`NEW RUN ALERT!`**\nJoin {type} runs on {ladder} hosted by {ctx.author.mention}!", view=view)
         view.message = message
     else:
         await ctx.respond("You are already hosting a run!", ephemeral=True)
@@ -321,21 +357,46 @@ async def host(ctx,
 @bot.slash_command(name="end", description="End a run", guild_ids=guild_ids)
 async def end(ctx):
     global active_runs
-    global runs_num
+    global run_timeouts
     if ctx.author in active_runs.keys():
+        channel = bot.get_channel(get_realm(active_runs[ctx.author]))
         async with active_runs_lock:
             del active_runs[ctx.author]
-        await ctx.respond(f"{ctx.author.mention} has ended the run.")
+        if ctx.author in run_timeouts:
+            async with run_timeouts_lock:
+                run_timeouts[ctx.author].cancel()
+                del run_timeouts[ctx.author]
+        await channel.send(f"{ctx.author.mention} has ended the run.")
+        return
     else:
         await ctx.respond("No runs exist under your user.", ephemeral=True)
-    if ctx.author in run_timeouts:
-        async with run_timeouts_lock:
-            run_timeouts[ctx.author].cancel()
-        del run_timeouts[ctx.author]
+        return
+
+def return_run(player):
+    global active_runs
+    if player in active_runs.keys():
+        return active_runs[player]
+    for run in active_runs.values():
+        if player in run['attendees']:
+            return run
+    return False
+
+@bot.slash_command(name="broadcast", description="Send a message tagging all your attendees.", guild_ids=guild_ids)
+async def broadcast(ctx, message: str):
+    player = ctx.author
+    run = return_run(player)
+    if run:
+        player_list = run['attendees'].copy()
+        player_list.append(run['runner'])
+        mention_list = [x.mention for x in player_list]
+        await ctx.respond(f"Broadcast to {(',').join(mention_list)}\n\n{message}")
+    else:
+        await ctx.respond("You are not currently in a run.", ephemeral=True)
 
 async def join_run_callback(interaction: discord.Interaction, run_id):
     async with active_runs_lock:
         run_info = active_runs.get(run_id)
+    channel = bot.get_channel(get_realm(run_info))
     if run_info:
         has_available_spots = len(run_info['attendees']) < 7
         available_spots = 7 - len(run_info['attendees'])
@@ -362,10 +423,10 @@ async def join_run_callback(interaction: discord.Interaction, run_id):
                 await interaction.response.send_message(content=game_info_message, ephemeral=True)  # Send game details privately to the joining user
             if available_spots > 0:
                 view = JoinRunView(run_id=run_info['runner'], timeout=850)
-                message = await interaction.followup.send(content=f"{user.mention} has been added to {run_info['runner'].mention}'s\n# {run_info['ladder']}\n{run_info['type']} run. There are {available_spots} spots left.", view=view)
+                message = await channel.send(content=f"{user.mention} has been added to {run_info['runner'].mention}'s {run_info['ladder']} {run_info['type']} run. There are {available_spots} spots left.", view=view)
                 view.message = message
             else:
-                await interaction.followup.send(content=f"{user.mention} has been added to {run_info['runner'].mention}'s\n# {run_info['ladder']}\n{run_info['type']} run. There are {available_spots} spots left.")
+                await channel.send(content=f"{user.mention} has been added to {run_info['runner'].mention}'s {run_info['ladder']} {run_info['type']} run. There are {available_spots} spots left.")
         else:
             await interaction.response.send_message(content="You are already in a run, or the run is full.", ephemeral=True)
     else:
@@ -419,7 +480,8 @@ async def leave(ctx):
             view = JoinRunView(run_id=runner, timeout=850)
             async with cursor_lock:
                 del_player_from_run_db(runner.id, ctx.author.name)
-            message = await ctx.respond(f"{ctx.author.mention} has left the\n# {active_runs[runner]['ladder']}\n{active_runs[runner]['type']} run. There are {spots_available} spots available in {runner.mention}'s runs.", view=view)
+            channel = bot.get_channel(get_realm(active_runs[runner]))
+            message = await channel.send(f"{ctx.author.mention} has left the {active_runs[runner]['ladder']} {active_runs[runner]['type']} run. There are {spots_available} spots available in {runner.mention}'s runs.", view=view)
             view.message = message
             return
 
