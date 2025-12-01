@@ -292,6 +292,41 @@ class JoinRunView(discord.ui.View):
         if self.message:
             await self.message.edit(view=self)
 
+
+class LeaveRunView(discord.ui.View):
+    def __init__(self, runner: discord.Member, timeout=850):
+        super().__init__(timeout=timeout)
+        self.runner = runner
+        self.message = None
+        leave_button = discord.ui.Button(style=discord.ButtonStyle.red, label="Leave Run")
+        leave_button.callback = self.leave_callback
+        self.add_item(leave_button)
+
+    async def leave_callback(self, interaction: discord.Interaction):
+        run = run_manager.get_run(self.runner)
+        if not run:
+            await interaction.response.send_message("The run no longer exists.", ephemeral=True)
+            return
+        user = interaction.user
+        if user in run.attendees:
+            if await run_manager.remove_attendee(self.runner, user):
+                await db.remove_attendee(self.runner.id, user.name)
+                game_info_message = f"Run has been left!"
+                await interaction.response.send_message(content=game_info_message, ephemeral=True)
+                available_spots = 7 - len(run.attendees)
+                channel = bot.get_channel(run.get_realm())
+                view = JoinRunView(runner=run.runner, timeout=850)
+                message = await channel.send(f"{user.mention} has left {run.runner.mention}'s {run.ladder} {run.type} run. There are {available_spots} spots left.", view=view)
+                view.message = message
+        else:
+            await interaction.response.send_message("You aren't currently in this run. If you are the runner, use /end instead.", ephemeral=True)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            await self.message.edit(view=self)
+
 class MyModal(discord.ui.Modal):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -469,7 +504,8 @@ These are the commands: /host /ng /runs /end /leave /add /kick /change_runner /a
             message_parts.append(msg)
             if has_available_spots and not has_view:
                 view = JoinRunView(runner=runner, timeout=850)
-                has_view = True
+            if ctx.author in run.attendees and ctx.user is not runner:
+                view = LeaveRunView(runner=runner, timeout=850)
         full_message = "".join(message_parts)
         if view:
             response = await ctx.respond(full_message, view=view, ephemeral=True)
